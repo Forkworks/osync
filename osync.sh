@@ -2152,6 +2152,11 @@ function deletion_propagation {
 
 	Logger "Propagating deletions to $replica_type replica." "NOTICE"
 
+	if [ "${_NMDELETE:-1}" -eq 1 ] && [ "$replica_type" == "${INITIATOR[0]}" ]; then
+                Logger "INFO: No deletions on initiator, --no-initiator-delete setted. " "NOTICE"
+                return 0
+        fi	
+
 	if [ "$replica_type" == "${INITIATOR[0]}" ]; then
 		replica_dir="${INITIATOR[1]}"
 		delete_dir="${INITIATOR[5]}"
@@ -2662,6 +2667,7 @@ function Usage {
 	echo "--dry             Will run osync without actually doing anything; just testing"
 	echo "--silent          Will run osync without any output to stdout, used for cron jobs"
 	echo "--verbose         Increases output"
+	echo "--no-master-delete No delete updates on master, even when there are deletions on slave."	
 	echo "--stats           Adds rsync transfer statistics to verbose output"
 	echo "--partial         Allows rsync to keep partial downloads that can be resumed later (experimental)"
 	echo "--no-maxtime      Disables any soft and hard execution time checks"
@@ -2749,6 +2755,10 @@ first=1
 for i in "$@"
 do
 	case $i in
+         	--no-initiator-delete)
+                _NMDELETE=1
+                opts=$opts" --no-initiator-delete"
+                ;;
 		--dry)
 		_DRYRUN=1
 		opts=$opts" --dry"
@@ -2911,3 +2921,4 @@ opts="${opts# *}"
 		fi
 		RunAfterHook
 	fi
+
