@@ -1189,11 +1189,11 @@ OSYNC_DIR=".osync_workdir"
 function TrapStop {
 	if [ $SOFT_STOP -eq 0 ]; then
 		Logger " /!\ WARNING: Manual exit of osync is really not recommended. Sync will be in inconsistent state." "WARN"
-		Logger " /!\ WARNING: If you are sure, please hit CTRL+C another time to quit." "WARN"
-		SOFT_STOP=1
-		return 1
+                Logger " /!\ WARNING: CTRL+C hit. Exiting osync. Please wait while replicas get unlocked..." "WARN"
+                exit 1
 	fi
 
+	# unused by the moment...
 	if [ $SOFT_STOP -eq 1 ]; then
 		Logger " /!\ WARNING: CTRL+C hit twice. Exiting osync. Please wait while replicas get unlocked..." "WARN"
 		SOFT_STOP=2
