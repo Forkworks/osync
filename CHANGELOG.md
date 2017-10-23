@@ -1,18 +1,116 @@
-KNOWN ISSUES
-------------
-
-- Cannot finish sync if one replica contains a directory and the other replica contains a file named the same way (Unix doesn't allow this)
-- Soft deletion does not honor exclusion lists
-
 RECENT CHANGES
 --------------
 
-XX Xxx 2016: osync v1.2-RC1 released
-- Improved unit tests
-	! Added conflict resolution tests
-	! Added softdeletion tests
-	! Added lock tests
-! documentation update, statefulness
+25 March 2017: osync v1.2 release (for full changelog of v1.2 branch see all v1.2-beta/RC entries)
+
+- Check for initiator directory before launching monitor mode
+- Updated RPM spec file (Thanks to https://github.com/liger1978)
+- Fixed remote commands can be run on local runs and obviously fail
+- Minor fixes in installer logic
+
+10 Feb 2017: osync v1.2-RC3 release
+
+- Uninstaller skips ssh_filter if needed by other program (osync/obackup)
+- Logger now automatically obfuscates _REMOTE_TOKEN
+- Logger doesn't show failed commands in stdout, only logs them
+
+08 Feb 2017: osync v1.2-RC2 release
+
+- Tests have run on CentOS 5,7 and 7, Debian 8, Linux Mint 18, Fedora 25, FreeBSD 10.3/pfSense, FreeBSD 11, MacOSX Sierra, Win10 1607 (14393.479) bash, Cygwin x64 and MSYS2 current
+- Hugely improved ssh_filter
+- Improved privilege elevation compatibility on SUDO_EXEC=yes runs
+- Refactored installer logic and added --remove option
+- Added optional mail body characterset encoding
+- Fixed log output has escaped UTF-8 characters because of LC_ALL=C
+- Fixed installer statistics don't report OS
+- Minor tweaks and fixes in ofunctions
+
+13 Dec 2016: osync v1.2-RC1 release
+
+- Unit tests have run on CentOS 5,6 and 7, Debian 8, Linux Mint 18, FreeBSD 10.3/pfSense, FreeBSD 11, MacOSX Sierra, Win10 1607 (14393.479) bash, Cygwin x64 and MSYS2 current
+- Added optional rsync arguments configuration value
+- Fixed another random error involving warns and errors triggered by earlier runs with same PID flag files
+- Adde more preflight checks
+- Fixed a random appearing issue with Sync being stopped on internet failure introduced in v1.2 rewrite
+- Resuming operation will not send warnings anymore unless resumed too many timess
+- Spinner is less prone to move logging on screen
+- Fixed daemon mode didn't enforce exclusions
+- Made a quick and dirty preprocessor
+	- ofunctions can now directly be loaded into osync via an include statement
+	- n_osync.sh can be assembled on the fly using bootstrap.sh
+- Forced remote ssh to use bash (fixes FreeBSD 11 compatibility when default shell is csh)
+- Faster execution
+	- Reduced number of needed sequential SSH connections for remote sync (4 connections less)
+	- Refactored CheckReplicaPath and CheckDiskSpace into one functon CheckReplicas
+	- Refactored CheckDiskSpace, CheckLocks and WriteLocks into one function HandleLocks
+	- Removed noclobber locking in favor of a more direct method
+- Improved remote logging
+- Fixed directory ctime softdeletion
+- Using mutt as mail program now supports multiple recipients
+- osync now properly handles symlink deletions (previous bugfix	didn't work properly)
+- Simplified osync-batch runner (internally and for user)
+	- Better filename handling
+	- Easier to read log output
+	- Always passes --silent to osync
+	- All options that do not belong to osync-batch are automatically passed to osync
+- Improved installer OS detection
+- Added daemon capability on MacOS X
+- Fixed upgrade script cannot update header on BSD / MacOS X
+- Fixed SendEmail function on MacOS X
+- Fixed MAX_HARD_EXEC_TIME not enforced in sync function introduced with v1.2 rewrite
+- Fixed MAX_SOFT_EXEC_TIME not enforced bug introduced with v1.2 rewrite
+- PRESERVE_ACL and PRESERVE_XATTR are ignored when local or remote OS is MacOS or msys or Cygwin
+- Fixed PRESERVE_EXECUTABILITY was ommited volontary on MacOS X because of rsync syntax
+- Fixed failed deletion rescheduling under BSD bug introduced with v1.2 rewrite
+- merge.sh is now BSD and Mac compatible
+- More work on unit tests:
+	- Unit tests are now BSD / MacOSX / MSYS / Cygwin and Windows 10 bash compatible
+	- Added more ACL tests
+	- Added directory soft deletion tests
+	- Added symlink and broken symlink copy / deletion tests
+	- Made unit tests more robust when aborted
+	- Simplified unit tests needed config files (merged travis and local config files)
+	- Added timed execution tests
+- More code compliance
+- Lots of minor fixes
+
+19 Nov 2016: osync v1.2-beta3 re-release
+
+- Fixed blocker bug where local tests tried GetRemoteOS Anyway
+- Fixed CentOS 5 compatibility bug for checking disk space introduced in beta3
+- More Android / Busybox compatibility
+- Made unit tests clean authorized_keys file after usage
+- Added local unit test where remote OS connection would fail
+
+18 Nov 2016: osync v1.2-beta3 released
+
+- Improved locking / unlocking replicas
+	- Fixed killing local pid that has lock bug introduced in v1.2 rewrite
+	- Allow remote unlocking when INSTANCE_ID of lock matches local INSTANCE_ID
+- Fixed failed deletions re-propagation bug introduced in v1.2 rewrite
+- Faster remote OS detection
+- New output switches, --no-prefix, --summary, --errors-only
+- Added busybox (and Android Termux) support
+        - More portable file size functions
+        - More portable compression program commands
+        - More paranoia checks
+        - Added busybox sendmail support
+	- Added tls and ssl support for sendmail
+- Added --skip-deletion support in config and quicksync modes
+- Added possibility to skip deletion on initiator or target replica
+- Prevent lock file racing condition (thanks to https://github.com/allter)
+- Added ssh password file support
+- Hugely improved unit tests
+        - Added conflict resolution tests
+        - Added softdeletion tests
+	- Added softdeletion cleanup tests
+        - Added lock tests
+        - Added skip-deletion tests
+	- Added configuration file tests
+	- Added upgrade script test
+	- Added basic daemon mode tests
+- Simplified logger
+- All fixes from v1.1.5
 
 17 Oct 2016: osync v1.2-beta2 released
 - osync now propagates symlink deletions and moves symlinks without referrents to deletion dir
@@ -34,10 +132,8 @@ XX Xxx 2016: osync v1.2-RC1 released
 - Improved batch runner
 - Made keep logging value configurable and not mandatory
 - Fixed handling of processes in uninterruptible sleep state
-! update doc on sudoers paths
 - Parallelized sync functions
 	- Rewrite sync resume process
-	- !doc about bandwidth
 - Added options to ignore permissions, ownership and groups
 - Refactored WaitFor... functions into one
 - Improved execution speed
@@ -50,7 +146,19 @@ XX Xxx 2016: osync v1.2-RC1 released
 - Added KillAllChilds function to accept multiple pids
 - Improved logging
 
-XX xxx 2016: osync v1.1.3 released
+17 Nov 2016: osync v1.1.5 released
+- Backported unit tests from v1.2-beta allowing to fix the following
+	- Allow quicksync mode to specify rsync include / exclude patterns as environment variables
+	- Added default path separator char in quicksync mode for multiple includes / exclusions
+	- Local runs should not check for remote connectivity
+	- Fixed backups go into root of replica instead of .osync_wordir/backups
+	- Fixed error alerts cannot be triggered from subprocesses
+	- Fixed remote locked targets are unlocked in any case
+
+10 Nov 2016: osync v1.1.4 released
+- Fixed a corner case with sending alerts with logfile attachments when osync is used by multiple users
+
+02 Sep 2016: osync v1.1.3 released
 - Fixed installer for CYGWIN / MSYS environment
 
 28 Aug 2016: osync v1.1.2 released
@@ -59,7 +167,6 @@ XX xxx 2016: osync v1.1.3 released
 - Fixed soft deletion when SUDO_EXEC is enabled
 
 06 Aug 2016: osync v1.1.1 released
-
 - Fixed bogus rsync pattern file adding
 - Fixed soft deletion always enabled on target
 - Fixed problem with attributes file list function

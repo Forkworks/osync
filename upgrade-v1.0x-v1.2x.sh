@@ -2,17 +2,17 @@
 
 PROGRAM="osync instance upgrade script"
 SUBPROGRAM="osync"
-AUTHOR="(C) 2016 by Orsiris de Jong"
+AUTHOR="(C) 2016-2017 by Orsiris de Jong"
 CONTACT="http://www.netpower.fr/osync - ozy@netpower.fr"
 OLD_PROGRAM_VERSION="v1.0x-v1.1x"
 NEW_PROGRAM_VERSION="v1.2x"
-CONFIG_FILE_VERSION=2016102101
-PROGRAM_BUILD=2016101701
+CONFIG_FILE_VERSION=2017020801
+PROGRAM_BUILD=2016121101
 
 ## type -p does not work on platforms other than linux (bash). If if does not work, always assume output is not a zero exitcode
 if ! type "$BASH" > /dev/null; then
-        echo "Please run this script only with bash shell. Tested on bash >= 3.2"
-        exit 127
+	echo "Please run this script only with bash shell. Tested on bash >= 3.2"
+	exit 127
 fi
 
 # Defines all keywords / value sets in osync configuration files
@@ -25,6 +25,7 @@ INITIATOR_SYNC_DIR
 TARGET_SYNC_DIR
 SSH_RSA_PRIVATE_KEY
 SSH_PASSWORD_FILE
+_REMOTE_TOKEN
 CREATE_DIRS
 LOGFILE
 MINIMUM_SPACE
@@ -42,6 +43,7 @@ SSH_COMPRESSION
 SSH_IGNORE_KNOWN_HOSTS
 REMOTE_HOST_PING
 REMOTE_3RD_PARTY_HOSTS
+RSYNC_OPTIONAL_ARGS
 PRESERVE_PERMISSIONS
 PRESERVE_OWNER
 PRESERVE_GROUP
@@ -71,6 +73,7 @@ FORCE_STRANGER_LOCK_RESUME
 PARTIAL
 DELTA_COPIES
 DESTINATION_MAILS
+MAIL_BODY_CHARSET
 SENDER_MAIL
 SMTP_SERVER
 SMTP_PORT
@@ -93,6 +96,7 @@ sync-test
 ''
 ${HOME}/backupuser/.ssh/id_rsa
 ''
+SomeAlphaNumericToken9
 no
 ''
 10240
@@ -110,6 +114,7 @@ yes
 no
 no
 'www.kernel.org www.google.com'
+''
 yes
 yes
 yes
@@ -139,6 +144,7 @@ no
 no
 yes
 ''
+''
 alert@your.system.tld
 smtp.your.isp.tld
 25
@@ -161,12 +167,11 @@ function Init {
 
 	TREE_CURRENT_FILENAME="-tree-current-$SYNC_ID"
 	TREE_AFTER_FILENAME="-tree-after-$SYNC_ID"
-	TREE_AFTER_FILENAME_NO_SUFFIX="-tree-after-$SYNC_ID"
 	DELETED_LIST_FILENAME="-deleted-list-$SYNC_ID"
 	FAILED_DELETE_LIST_FILENAME="-failed-delete-$SYNC_ID"
 
 	if [ "${SLAVE_SYNC_DIR:0:6}" == "ssh://" ]; then
-		REMOTE_SYNC="yes"
+		REMOTE_OPERATION="yes"
 
 		# remove leadng 'ssh://'
 		uri=${SLAVE_SYNC_DIR#ssh://*}
@@ -217,7 +222,7 @@ function Usage {
 }
 
 function CheckEnvironment {
-	if [ "$REMOTE_SYNC" == "yes" ]; then
+	if [ "$REMOTE_OPERATION" == "yes" ]; then
 		if ! type -p ssh > /dev/null 2>&1
 		then
 			Logger "ssh not present. Cannot start sync." "CRITICAL"
@@ -242,10 +247,10 @@ function LoadConfigFile {
 		echo "Wrong configuration file supplied [$config_file]. Sync cannot start."
 		exit 1
 	else
-		egrep '^#|^[^ ]*=[^;&]*'  "$config_file" > "./$SUBPROGRAM.$FUNCNAME.$$"
+		egrep '^#|^[^ ]*=[^;&]*'  "$config_file" > "./$SUBPROGRAM.${FUNCNAME[0]}.$$"
 		# Shellcheck source=./sync.conf
-		source "./$SUBPROGRAM.$FUNCNAME.$$"
-		rm -f "./$SUBPROGRAM.$FUNCNAME.$$"
+		source "./$SUBPROGRAM.${FUNCNAME[0]}.$$"
+		rm -f "./$SUBPROGRAM.${FUNCNAME[0]}.$$"
 	fi
 }
 
@@ -443,7 +448,7 @@ ENDSSH
 
 function RenameStateFiles {
 	_RenameStateFilesLocal "$MASTER_SYNC_DIR/$OSYNC_DIR/$STATE_DIR"
-	if [ "$REMOTE_SYNC" != "yes" ]; then
+	if [ "$REMOTE_OPERATION" != "yes" ]; then
 		_RenameStateFilesLocal "$SLAVE_SYNC_DIR/$OSYNC_DIR/$STATE_DIR"
 	else
 		_RenameStateFilesRemote "$SLAVE_SYNC_DIR/$OSYNC_DIR/$STATE_DIR"
@@ -453,17 +458,17 @@ function RenameStateFiles {
 function RewriteOldConfigFiles {
 	local config_file="${1}"
 
-	if ((! grep "MASTER_SYNC_DIR=" "$config_file" > /dev/null) && (! grep "INITIATOR_SYNC_DIR=" "$config_file" > /dev/null)); then
+	if ! grep "MASTER_SYNC_DIR=" "$config_file" > /dev/null && ! grep "INITIATOR_SYNC_DIR=" "$config_file" > /dev/null; then
 		echo "Config file [$config_file] does not seem to be an osync v1.0x or v1.1x file."
 		exit 1
 	fi
 
-        echo "Backing up [$config_file] as [$config_file.save]"
-        cp -p "$config_file" "$config_file.save"
-        if [ $? != 0 ]; then
-                echo "Cannot backup config file."
-                exit 1
-        fi
+	echo "Backing up [$config_file] as [$config_file.save]"
+	cp -p "$config_file" "$config_file.save"
+	if [ $? != 0 ]; then
+		echo "Cannot backup config file."
+		exit 1
+	fi
 
 	echo "Rewriting config file $config_file"
 
@@ -474,54 +479,54 @@ function RewriteOldConfigFiles {
 	sed -i'.tmp' 's/^CONFLICT_PREVALANCE=master/CONFLICT_PREVALANCE=initiator/g' "$config_file"
 	sed -i'.tmp' 's/^CONFLICT_PREVALANCE=slave/CONFLICT_PREVALANCE=target/g' "$config_file"
 	sed -i'.tmp' 's/^SYNC_ID=/INSTANCE_ID=/g' "$config_file"
+	sed -i'.tmp' 's/^REMOTE_SYNC=.*//g' "$config_file"
 
 	rm -f "$config_file.tmp"
 }
 
 function AddMissingConfigOptions {
-        local config_file="${1}"
-        local counter=0
+	local config_file="${1}"
+	local counter=0
 
-        while [ $counter -lt ${#KEYWORDS[@]} ]; do
-                if ! grep "^${KEYWORDS[$counter]}=" > /dev/null "$config_file"; then
-                        echo "${KEYWORDS[$counter]} not found"
-                        if [ $counter -gt 0 ]; then
-                                sed -i'.tmp' '/^'${KEYWORDS[$((counter-1))]}'=*/a\'$'\n'${KEYWORDS[$counter]}'="'"${VALUES[$counter]}"'"\'$'\n''' "$config_file"
-                                if [ $? -ne 0 ]; then
-                                        echo "Cannot add missing ${[KEYWORDS[$counter]}."
-                                        exit 1
-                                fi
-                        else
-                                sed -i'.tmp' '/onfig file rev*/a\'$'\n'${KEYWORDS[$counter]}'="'"${VALUES[$counter]}"'"\'$'\n''' "$config_file"
-                        fi
-                        echo "Added missing ${KEYWORDS[$counter]} config option with default option [${VALUES[$counter]}]"
-                fi
-                counter=$((counter+1))
-        done
+	while [ $counter -lt ${#KEYWORDS[@]} ]; do
+		if ! grep "^${KEYWORDS[$counter]}=" > /dev/null "$config_file"; then
+			echo "${KEYWORDS[$counter]} not found"
+			if [ $counter -gt 0 ]; then
+				sed -i'.tmp' '/^'${KEYWORDS[$((counter-1))]}'=*/a\'$'\n'${KEYWORDS[$counter]}'="'"${VALUES[$counter]}"'"\'$'\n''' "$config_file"
+				if [ $? -ne 0 ]; then
+					echo "Cannot add missing ${[KEYWORDS[$counter]}."
+					exit 1
+				fi
+			else
+				sed -i'.tmp' '/onfig file rev*/a\'$'\n'${KEYWORDS[$counter]}'="'"${VALUES[$counter]}"'"\'$'\n''' "$config_file"
+			fi
+			echo "Added missing ${KEYWORDS[$counter]} config option with default option [${VALUES[$counter]}]"
+		fi
+		counter=$((counter+1))
+	done
 }
 
 function UpdateConfigHeader {
-        local config_file="${1}"
+	local config_file="${1}"
 
-        # "onfig file rev" to deal with earlier variants of the file
-        sed -i'.tmp' '/onfig file rev/c\###### '$SUBPROGRAM' config file rev '$CONFIG_FILE_VERSION' '$NEW_PROGRAM_VERSION "$config_file"
-
-        rm -f "$config_file.tmp"
+	# "onfig file rev" to deal with earlier variants of the file where c was lower or uppercase
+	#sed -i'.tmp' '/onfig file rev/c\###### '$SUBPROGRAM' config file rev '$CONFIG_FILE_VERSION' '$NEW_PROGRAM_VERSION "$config_file"
+	sed -i'.tmp' 's/.*onfig file rev.*/##### '$SUBPROGRAM' config file rev '$CONFIG_FILE_VERSION' '$NEW_PROGRAM_VERSION'/' "$config_file"
+	rm -f "$config_file.tmp"
 }
 
-_QUICKSYNC=0
+_QUICK_SYNC=0
 
 for i in "$@"
 do
 	case $i in
 		--master=*)
-		no_maxtime=1
 		MASTER_SYNC_DIR=${i##*=}
-		QUICK_SYNC=$(($_QUICKSYNC + 1))
+		_QUICK_SYNC=$(($_QUICK_SYNC + 1))
 		;;
 		--slave=*)
 		SLAVE_SYNC_DIR=${i##*=}
-		QUICK_SYNC=$(($_QUICKSYNC + 1))
+		_QUICK_SYNC=$(($_QUICK_SYNC + 1))
 		;;
 		--rsakey=*)
 		SSH_RSA_PRIVATE_KEY=${i##*=}
@@ -532,10 +537,10 @@ do
 	esac
 done
 
-if [ $_QUICKSYNC -eq 2 ]; then
+if [ $_QUICK_SYNC -eq 2 ]; then
 	Init
-	REPLICA_DIR=${i##*=}
-	RenameStateFiles
+	RenameStateFiles "$MASTER_SYNC_DIR"
+	RenameStateFiles "$SLAVE_SYNC_DIR"
 
 elif [ "$1" != "" ] && [ -f "$1" ] && [ -w "$1" ]; then
 	CONF_FILE="$1"
@@ -543,10 +548,11 @@ elif [ "$1" != "" ] && [ -f "$1" ] && [ -w "$1" ]; then
 	CONF_FILE="${CONF_FILE%/}"
 	LoadConfigFile "$CONF_FILE"
 	Init
-        RewriteOldConfigFiles "$CONF_FILE"
-        AddMissingConfigOptions "$CONF_FILE"
-        UpdateConfigHeader "$CONF_FILE"
-	RenameStateFiles
+	RewriteOldConfigFiles "$CONF_FILE"
+	AddMissingConfigOptions "$CONF_FILE"
+	UpdateConfigHeader "$CONF_FILE"
+	RenameStateFiles "$MASTER_SYNC_DIR"
+	RenameStateFiles "$SLAVE_SYNC_DIR"
 else
 	Usage
 fi

@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 
+## Installer script suitable for osync / obackup / pmocr
+
+_OFUNCTIONS_BOOTSTRAP=true
+
 PROGRAM=osync
-PROGRAM_VERSION=1.2-beta2
+
+PROGRAM_VERSION=$(grep "PROGRAM_VERSION=" $PROGRAM.sh)
+PROGRAM_VERSION=${PROGRAM_VERSION#*=}
 PROGRAM_BINARY=$PROGRAM".sh"
 PROGRAM_BATCH=$PROGRAM"-batch.sh"
-SCRIPT_BUILD=2016102201
+SSH_FILTER="ssh_filter.sh"
+
+SCRIPT_BUILD=2017032101
 
 ## osync / obackup / pmocr / zsnap install script
-## Tested on RHEL / CentOS 6 & 7, Fedora 23, Debian 7 & 8, Mint 17 and FreeBSD 8 & 10
+## Tested on RHEL / CentOS 6 & 7, Fedora 23, Debian 7 & 8, Mint 17 and FreeBSD 8, 10 and 11
 ## Please adapt this to fit your distro needs
 
-#TODO: silent mode and no stats mode
+# Get current install.sh path from http://stackoverflow.com/a/246128/2635443
+SCRIPT_PATH="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 CONF_DIR=$FAKEROOT/etc/$PROGRAM
 BIN_DIR="$FAKEROOT/usr/local/bin"
@@ -19,88 +28,166 @@ SERVICE_DIR_INIT=$FAKEROOT/etc/init.d
 SERVICE_DIR_SYSTEMD_SYSTEM=$FAKEROOT/lib/systemd/system
 SERVICE_DIR_SYSTEMD_USER=$FAKEROOT/etc/systemd/user
 
-## osync specific code
-OSYNC_SERVICE_FILE_INIT="osync-srv"
-OSYNC_SERVICE_FILE_SYSTEMD_SYSTEM="osync-srv@.service"
-OSYNC_SERVICE_FILE_SYSTEMD_USER="osync-srv@.service.user"
+if [ "$PROGRAM" == "osync" ]; then
+	SERVICE_NAME="osync-srv"
+elif [ "$PROGRAM" == "pmocr" ]; then
+	SERVICE_NAME="pmocr-srv"
+fi
 
-## pmocr specfic code
-PMOCR_SERVICE_FILE_INIT="pmocr-srv"
-PMOCR_SERVICE_FILE_SYSTEMD_SYSTEM="pmocr-srv@.service"
+SERVICE_FILE_INIT="$SERVICE_NAME"
+SERVICE_FILE_SYSTEMD_SYSTEM="$SERVICE_NAME@.service"
+SERVICE_FILE_SYSTEMD_USER="$SERVICE_NAME@.service.user"
 
 ## Generic code
 
 ## Default log file
-if [ -w $FAKEROOT/var/log ]; then
-        LOG_FILE="$FAKEROOT/var/log/$PROGRAM-install.log"
+if [ -w "$FAKEROOT/var/log" ]; then
+	LOG_FILE="$FAKEROOT/var/log/$PROGRAM-install.log"
 elif ([ "$HOME" != "" ] && [ -w "$HOME" ]); then
-        LOG_FILE="$HOME/$PROGRAM-install.log"
+	LOG_FILE="$HOME/$PROGRAM-install.log"
 else
-    	LOG_FILE="./$PROGRAM-install.log"
+	LOG_FILE="./$PROGRAM-install.log"
 fi
 
-# Generic quick logging function
+# QuickLogger subfunction, can be called directly
 function _QuickLogger {
-        local value="${1}"
-       	local destination="${2}" # Destination: stdout, log, both
+	local value="${1}"
+	local destination="${2}" # Destination: stdout, log, both
 
-        if ([ "$destination" == "log" ] || [ "$destination" == "both" ]); then
-                echo -e "$(date) - $value" >> "$LOG_FILE"
-        elif ([ "$destination" == "stdout" ] || [ "$destination" == "both" ]); then
-                echo -e "$value"
-       	fi
+	if ([ "$destination" == "log" ] || [ "$destination" == "both" ]); then
+		echo -e "$(date) - $value" >> "$LOG_FILE"
+	elif ([ "$destination" == "stdout" ] || [ "$destination" == "both" ]); then
+		echo -e "$value"
+	fi
 }
 
+# Generic quick logging function
 function QuickLogger {
 	local value="${1}"
 
-	if [ "$_SILENT" -eq 1 ]; then
+	if [ "$_LOGGER_SILENT" == true ]; then
 		_QuickLogger "$value" "log"
 	else
 		_QuickLogger "$value" "stdout"
 	fi
 }
+## from https://gist.github.com/cdown/1163649
+function UrlEncode {
+	local length="${#1}"
 
-function urlencode() {
-    # urlencode <string>
-
-    local LANG=C
-    local length="${#1}"
-    for (( i = 0; i < length; i++ )); do
-        local c="${1:i:1}"
-        case $c in
-            [a-zA-Z0-9.~_-]) printf "$c" ;;
-            *) printf '%%%02X' "'$c" ;;
-        esac
-    done
+	local LANG=C
+	for (( i = 0; i < length; i++ )); do
+		local c="${1:i:1}"
+		case $c in
+			[a-zA-Z0-9.~_-])
+			printf "$c"
+			;;
+			*)
+			printf '%%%02X' "'$c"
+			;;
+		esac
+	done
 }
+function GetLocalOS {
+	local localOsVar
+	local localOsName
+	local localOsVer
 
-function SetOSSettings {
-	USER=root
-
-	if  type busybox > /dev/null 2>&1; then
-		QuickLogger "$0 won't work in busybox. Please use $PROGRAM_BINARY.sh directly."
-		exit 1
-	fi
-
-	local local_os_var
-
-	local_os_var="$(uname -spio 2>&1)"
-	if [ $? != 0 ]; then
-		local_os_var="$(uname -v 2>&1)"
-		if [ $? != 0 ]; then
-			local_os_var="$(uname)"
+	# There's no good way to tell if currently running in BusyBox shell. Using sluggish way.
+	if ls --help 2>&1 | grep -i "BusyBox" > /dev/null; then
+		localOsVar="BusyBox"
+	else
+		# Detecting the special ubuntu userland in Windows 10 bash
+		if grep -i Microsoft /proc/sys/kernel/osrelease > /dev/null 2>&1; then
+			localOsVar="Microsoft"
+		else
+			localOsVar="$(uname -spior 2>&1)"
+			if [ $? != 0 ]; then
+				localOsVar="$(uname -v 2>&1)"
+				if [ $? != 0 ]; then
+					localOsVar="$(uname)"
+				fi
+			fi
 		fi
 	fi
 
-	case $local_os_var in
+	case $localOsVar in
+		# Android uname contains both linux and android, keep it before linux entry
+		*"Android"*)
+		LOCAL_OS="Android"
+		;;
+		*"Linux"*)
+		LOCAL_OS="Linux"
+		;;
+		*"BSD"*)
+		LOCAL_OS="BSD"
+		;;
+		*"MINGW32"*|*"MINGW64"*|*"MSYS"*)
+		LOCAL_OS="msys"
+		;;
+		*"CYGWIN"*)
+		LOCAL_OS="Cygwin"
+		;;
+		*"Microsoft"*)
+		LOCAL_OS="WinNT10"
+		;;
+		*"Darwin"*)
+		LOCAL_OS="MacOSX"
+		;;
+		*"BusyBox"*)
+		LOCAL_OS="BusyBox"
+		;;
+		*)
+		if [ "$IGNORE_OS_TYPE" == "yes" ]; then
+			Logger "Running on unknown local OS [$localOsVar]." "WARN"
+			return
+		fi
+		if [ "$_OFUNCTIONS_VERSION" != "" ]; then
+			Logger "Running on >> $localOsVar << not supported. Please report to the author." "ERROR"
+		fi
+		exit 1
+		;;
+	esac
+	if [ "$_OFUNCTIONS_VERSION" != "" ]; then
+		Logger "Local OS: [$localOsVar]." "DEBUG"
+	fi
+
+	# Get linux versions
+	if [ -f "/etc/os-release" ]; then
+		localOsName=$(GetConfFileValue "/etc/os-release" "NAME")
+		localOsVer=$(GetConfFileValue "/etc/os-release" "VERSION")
+	fi
+
+	# Add a global variable for statistics in installer
+	LOCAL_OS_FULL="$localOsVar ($localOsName $localOsVer)"
+}
+function GetConfFileValue () {
+        local file="${1}"
+        local name="${2}"
+        local value
+
+        value=$(grep "^$name=" "$file")
+        if [ $? == 0 ]; then
+                value="${value##*=}"
+                echo "$value"
+        else
+		Logger "Cannot get value for [$name] in config file [$file]." "ERROR"
+        fi
+}
+
+function SetLocalOSSettings {
+	USER=root
+
+	# LOCAL_OS and LOCAL_OS_FULL are global variables set at GetLocalOS
+
+	case $LOCAL_OS in
 		*"BSD"*)
 		GROUP=wheel
 		;;
-		*"Darwin"*)
+		*"MacOSX"*)
 		GROUP=admin
 		;;
-		*"MINGW"*|*"CYGWIN"*)
+		*"msys"*|*"Cygwin"*)
 		USER=""
 		GROUP=""
 		;;
@@ -109,12 +196,17 @@ function SetOSSettings {
 		;;
 	esac
 
-	if ([ "$USER" != "" ] && [ "$(whoami)" != "$USER" ] && [ "$FAKEROOT" == "" ]); then
-	  	QuickLogger "Must be run as $USER."
+	if [ "$LOCAL_OS" == "Android" ] || [ "$LOCAL_OS" == "BusyBox" ]; then
+		QuickLogger "Cannot be installed on [$LOCAL_OS]. Please use $PROGRAM.sh directly."
 		exit 1
 	fi
 
-	OS=$(urlencode "$local_os_var")
+	if ([ "$USER" != "" ] && [ "$(whoami)" != "$USER" ] && [ "$FAKEROOT" == "" ]); then
+		QuickLogger "Must be run as $USER."
+		exit 1
+	fi
+
+	OS=$(UrlEncode "$LOCAL_OS_FULL")
 }
 
 function GetInit {
@@ -130,146 +222,181 @@ function GetInit {
 	fi
 }
 
-function CreateConfDir {
-	if [ ! -d "$CONF_DIR" ]; then
-		mkdir "$CONF_DIR"
+function CreateDir {
+	local dir="${1}"
+
+	if [ ! -d "$dir" ]; then
+		mkdir "$dir"
 		if [ $? == 0 ]; then
-			QuickLogger "Created directory [$CONF_DIR]."
+			QuickLogger "Created directory [$dir]."
 		else
-			QuickLogger "Cannot create directory [$CONF_DIR]."
+			QuickLogger "Cannot create directory [$dir]."
 			exit 1
 		fi
+	fi
+}
+
+function CopyFile {
+	local sourcePath="${1}"
+	local destPath="${2}"
+	local fileName="${3}"
+	local fileMod="${4}"
+	local fileUser="${5}"
+	local fileGroup="${6}"
+	local overwrite="${7:-false}"
+
+	local userGroup=""
+	local oldFileName
+
+	if [ -f "$destPath/$fileName" ] && [ $overwrite == false ]; then
+		oldFileName="$fileName"
+		fileName="$oldFileName.new"
+		cp "$sourcePath/$oldFileName" "$destPath/$fileName"
 	else
-		QuickLogger "Config directory [$CONF_DIR] exists."
+		cp "$sourcePath/$fileName" "$destPath"
+	fi
+
+	if [ $? != 0 ]; then
+		QuickLogger "Cannot copy [$fileName] to [$destPath]. Make sure to run install script in the directory containing all other files."
+		QuickLogger "Also make sure you have permissions to write to [$BIN_DIR]."
+		exit 1
+	else
+		QuickLogger "Copied [$fileName] to [$destPath]."
+		if [ "$fileMod" != "" ]; then
+			chmod "$fileMod" "$destPath/$fileName"
+			if [ $? != 0 ]; then
+				QuickLogger "Cannot set file permissions of [$destPath/$fileName] to [$fileMod]."
+				exit 1
+			else
+				QuickLogger "Set file permissions to [$fileMod] on [$destPath/$fileName]."
+			fi
+		fi
+
+		if [ "$fileUser" != "" ]; then
+			userGroup="$fileUser"
+
+			if [ "$fileGroup" != "" ]; then
+				userGroup="$userGroup"":$fileGroup"
+			fi
+
+			chown "$userGroup" "$destPath/$fileName"
+			if [ $? != 0 ]; then
+				QuickLogger "Could not set file ownership on [$destPath/$fileName] to [$userGroup]."
+				exit 1
+			else
+				QuickLogger "Set file ownership on [$destPath/$fileName] to [$userGroup]."
+			fi
+		fi
 	fi
 }
 
 function CopyExampleFiles {
-	if [ -f "./sync.conf.example" ]; then
-		cp "./sync.conf.example" "$CONF_DIR/sync.conf.example"
-	fi
+	exampleFiles=()
+	exampleFiles[0]="sync.conf.example"		# osync
+	exampleFiles[1]="host_backup.conf.example"	# obackup
+	exampleFiles[2]="exclude.list.example"		# osync & obackup
+	exampleFiles[3]="snapshot.conf.example"		# zsnap
+	exampleFiles[4]="default.conf"			# pmocr
 
-	if [ -f "./host_backup.conf.example" ]; then
-		cp "./host_backup.conf.example" "$CONF_DIR/host_backup.conf.example"
-	fi
-
-	if [ -f "./exlude.list.example" ]; then
-		cp "./exclude.list.example" "$CONF_DIR/exclude.list.example"
-	fi
-
-	if [ -f "./snapshot.conf.example" ]; then
-		cp "./snapshot.conf.example" "$CONF_DIR/snapshot.conf.example"
-	fi
-
-	if [ -f "./default.conf" ]; then
-		if [ -f "$CONF_DIR/default.conf" ]; then
-			cp "./default.conf" "$CONF_DIR/default.conf.new"
-			QuickLogger "Copied default.conf to [$CONF_DIR/default.conf.new]."
-		else
-			cp "./default.conf" "$CONF_DIR/default.conf"
+	for file in "${exampleFiles[@]}"; do
+		if [ -f "$SCRIPT_PATH/$file" ]; then
+			CopyFile "$SCRIPT_PATH" "$CONF_DIR" "$file" "" "" "" false
 		fi
-	fi
+	done
 }
 
 function CopyProgram {
-	cp "./$PROGRAM_BINARY" "$BIN_DIR"
-	if [ $? != 0 ]; then
-		QuickLogger "Cannot copy $PROGRAM_BINARY to [$BIN_DIR]. Make sure to run install script in the directory containing all other files."
-		QuickLogger "Also make sure you have permissions to write to [$BIN_DIR]."
-		exit 1
-	else
-		chmod 755 "$BIN_DIR/$PROGRAM_BINARY"
-		QuickLogger "Copied $PROGRAM_BINARY to [$BIN_DIR]."
+	binFiles=()
+	binFiles[0]="$PROGRAM_BINARY"
+	if [ "$PROGRAM" == "osync" ] || [ "$PROGRAM" == "obackup" ]; then
+		binFiles[1]="$PROGRAM_BATCH"
+		binFiles[2]="$SSH_FILTER"
 	fi
 
-	if [ -f "./$PROGRAM_BATCH" ]; then
-		cp "./$PROGRAM_BATCH" "$BIN_DIR"
-		if [ $? != 0 ]; then
-			QuickLogger "Cannot copy $PROGRAM_BATCH to [$BIN_DIR]."
-		else
-			chmod 755 "$BIN_DIR/$PROGRAM_BATCH"
-			QuickLogger "Copied $PROGRAM_BATCH to [$BIN_DIR]."
-		fi
+	local user=""
+	local group=""
+
+	if ([ "$USER" != "" ] && [ "$FAKEROOT" == "" ]); then
+		user="$USER"
+	fi
+	if ([ "$GROUP" != "" ] && [ "$FAKEROOT" == "" ]); then
+		group="$GROUP"
 	fi
 
-	if [  -f "./ssh_filter.sh" ]; then
-		cp "./ssh_filter.sh" "$BIN_DIR"
-		if [ $? != 0 ]; then
-			QuickLogger "Cannot copy ssh_filter.sh to [$BIN_DIR]."
-		else
-			chmod 755 "$BIN_DIR/ssh_filter.sh"
-			if ([ "$USER" != "" ] && [ "$GROUP" != "" ] && [ "$FAKEROOT" == "" ]); then
-				chown $USER:$GROUP "$BIN_DIR/ssh_filter.sh"
-			fi
-			QuickLogger "Copied ssh_filter.sh to [$BIN_DIR]."
-		fi
-	fi
+	for file in "${binFiles[@]}"; do
+		CopyFile "$SCRIPT_PATH" "$BIN_DIR" "$file" 755 "$user" "$group" true
+	done
 }
 
 function CopyServiceFiles {
-	# OSYNC SPECIFIC
-	if ([ "$init" == "systemd" ] && [ -f "./$OSYNC_SERVICE_FILE_SYSTEMD_SYSTEM" ]); then
-		cp "./$OSYNC_SERVICE_FILE_SYSTEMD_SYSTEM" "$SERVICE_DIR_SYSTEMD_SYSTEM" && cp "./$OSYNC_SERVICE_FILE_SYSTEMD_USER" "$SERVICE_DIR_SYSTEMD_USER/$SERVICE_FILE_SYSTEMD_SYSTEM"
-		if [ $? != 0 ]; then
-			QuickLogger "Cannot copy the systemd file to [$SERVICE_DIR_SYSTEMD_SYSTEM] or [$SERVICE_DIR_SYSTEMD_USER]."
-		else
-			QuickLogger "Created osync-srv service in [$SERVICE_DIR_SYSTEMD_SYSTEM] and [$SERVICE_DIR_SYSTEMD_USER]."
-			QuickLogger "Can be activated with [systemctl start osync-srv@instance.conf] where instance.conf is the name of the config file in $CONF_DIR."
-			QuickLogger "Can be enabled on boot with [systemctl enable osync-srv@instance.conf]."
-			QuickLogger "In userland, active with [systemctl --user start osync-srv@instance.conf]."
+	if ([ "$init" == "systemd" ] && [ -f "$SCRIPT_PATH/$SERVICE_FILE_SYSTEMD_SYSTEM" ]); then
+		CopyFile "$SCRIPT_PATH" "$SERVICE_DIR_SYSTEMD_SYSTEM" "$SERVICE_FILE_SYSTEMD_SYSTEM" "" "" "" true
+		if [ -f "$SCRIPT_PATH/$SERVICE_FILE_SYSTEMD_SYSTEM_USER" ]; then
+			CopyFile "$SCRIPT_PATH" "$SERVICE_DIR_SYSTEMD_USER" "$SERVICE_FILE_SYSTEMD_USER" "" "" "" true
 		fi
-	elif ([ "$init" == "initV" ] && [ -f "./$OSYNC_SERVICE_FILE_INIT" ]); then
-		cp "./$OSYNC_SERVICE_FILE_INIT" "$SERVICE_DIR_INIT"
-		if [ $? != 0 ]; then
-			QuickLogger "Cannot copy osync-srv to [$SERVICE_DIR_INIT]."
-		else
-			chmod 755 "$SERVICE_DIR_INIT/$OSYNC_SERVICE_FILE_INIT"
-			QuickLogger "Created osync-srv service in [$SERVICE_DIR_INIT]."
-			QuickLogger "Can be activated with [service $OSYNC_SERVICE_FILE_INIT start]."
-			QuickLogger "Can be enabled on boot with [chkconfig $OSYNC_SERVICE_FILE_INIT on]."
-		fi
-	fi
 
-	# PMOCR SPECIFIC
-	if ([ "$init" == "systemd" ] && [ -f "./$PMOCR_SERVICE_FILE_SYSTEMD_SYSTEM" ]); then
-		cp "./$PMOCR_SERVICE_FILE_SYSTEMD_SYSTEM" "$SERVICE_DIR_SYSTEMD_SYSTEM"
-		if [ $? != 0 ]; then
-			QuickLogger "Cannot copy the systemd file to [$SERVICE_DIR_SYSTEMD_SYSTEM] or [$SERVICE_DIR_SYSTEMD_USER]."
-		else
-			QuickLogger "Created pmocr-srv service in [$SERVICE_DIR_SYSTEMD_SYSTEM] and [$SERVICE_DIR_SYSTEMD_USER]."
-			QuickLogger "Can be activated with [systemctl start pmocr-srv@default.conf] where default.conf is the name of the config file in $CONF_DIR."
-			QuickLogger "Can be enabled on boot with [systemctl enable pmocr-srv@default.conf]."
-		fi
-	elif ([ "$init" == "initV" ] && [ -f "./$PMOCR_SERVICE_FILE_INIT" ]); then
-		cp "./$PMOCR_SERVICE_FILE_INIT" "$SERVICE_DIR_INIT"
-		if [ $? != 0 ]; then
-			QuickLogger "Cannot copy pmoct-srv to [$SERVICE_DIR_INIT]."
-		else
-			chmod 755 "$SERVICE_DIR_INIT/$PMOCR_SERVICE_FILE_INIT"
-			QuickLogger "Created osync-srv service in [$SERVICE_DIR_INIT]."
-			QuickLogger "Can be activated with [service $PMOCR_SERVICE_FILE_INIT start]."
-			QuickLogger "Can be enabled on boot with [chkconfig $PMOCR_SERVICE_FILE_INIT on]."
-		fi
+		QuickLogger "Created [$SERVICE_NAME] service in [$SERVICE_DIR_SYSTEMD_SYSTEM] and [$SERVICE_DIR_SYSTEMD_USER]."
+		QuickLogger "Can be activated with [systemctl start SERVICE_NAME@instance.conf] where instance.conf is the name of the config file in $CONF_DIR."
+		QuickLogger "Can be enabled on boot with [systemctl enable $SERVICE_NAME@instance.conf]."
+		QuickLogger "In userland, active with [systemctl --user start $SERVICE_NAME@instance.conf]."
+	elif ([ "$init" == "initV" ] && [ -f "$SCRIPT_PATH/$SERVICE_FILE_INIT" ] && [ -d "$SERVICE_DIR_INIT" ]); then
+		CopyFile "$SCRIPT_PATH" "$SERVICE_DIR_INIT" "$SERVICE_FILE_INIT" "755" "" "" true
+
+		QuickLogger "Created osync-srv service in [$SERVICE_DIR_INIT]."
+		QuickLogger "Can be activated with [service $OSYNC_SERVICE_FILE_INIT start]."
+		QuickLogger "Can be enabled on boot with [chkconfig $OSYNC_SERVICE_FILE_INIT on]."
+	else
+		QuickLogger "Cannot define what init style is in use on this system. Skipping service file installation."
 	fi
 }
 
 function Statistics {
-        if type wget > /dev/null; then
-                wget -qO- "$STATS_LINK" > /dev/null 2>&1
-                if [ $? == 0 ]; then
-                        return 0
-                fi
+	if type wget > /dev/null; then
+		wget -qO- "$STATS_LINK" > /dev/null 2>&1
+		if [ $? == 0 ]; then
+			return 0
+		fi
 	fi
 
-        if type curl > /dev/null; then
-                curl "$STATS_LINK" -o /dev/null > /dev/null 2>&1
-                if [ $? == 0 ]; then
-                        return 0
-                fi
+	if type curl > /dev/null; then
+		curl "$STATS_LINK" -o /dev/null > /dev/null 2>&1
+		if [ $? == 0 ]; then
+			return 0
+		fi
 	fi
 
-       	QuickLogger "Neiter wget nor curl could be used for. Cannot run statistics. Use the provided link please."
-        return 1
+	QuickLogger "Neiter wget nor curl could be used for. Cannot run statistics. Use the provided link please."
+	return 1
+}
+
+function RemoveFile {
+	local file="${1}"
+
+	if [ -f "$file" ]; then
+		rm -f "$file"
+		if [ $? != 0 ]; then
+			QuickLogger "Could not remove file [$file]."
+		else
+			QuickLogger "Removed file [$file]."
+		fi
+	else
+		QuickLogger "File [$file] not found. Skipping."
+	fi
+}
+
+function RemoveAll {
+	RemoveFile "$BIN_DIR/$PROGRAM_BINARY"
+	RemoveFile "$BIN_DIR/$PROGRAM_BATCH"
+	if [ ! -f "$BIN_DIR/osync.sh" ] && [ ! -f "$BIN_DIR/obackup.sh" ]; then		# Check if any other program requiring ssh filter is present before removal
+		RemoveFile "$BIN_DIR/$SSH_FILTER"
+	else
+		QuickLogger "Skipping removal of [$BIN_DIR/$SSH_FILTER] because other programs present that need it."
+	fi
+	RemoveFile "$SERVICE_DIR_SYSTEMD_SYSTEM/$SERVICE_FILE_SYSTEMD_SYSTEM"
+	RemoveFile "$SERVICE_DIR_SYSTEMD_USER/$SERVICE_FILE_SYSTEMD_SYSTEM"
+	RemoveFile "$SERVICE_DIR_INIT/$SERVICE_FILE_INIT"
+
+	QuickLogger "Skipping configuration files in [$CONF_DIR]. You may remove this directory manually."
 }
 
 function Usage {
@@ -277,19 +404,25 @@ function Usage {
 	echo "options:"
 	echo "--silent		Will log and bypass user interaction."
 	echo "--no-stats	Used with --silent in order to refuse sending anonymous install stats."
+	echo "--remove          Remove the program."
 	exit 127
 }
 
-_SILENT=0
+_LOGGER_SILENT=false
 _STATS=1
+ACTION="install"
+
 for i in "$@"
 do
 	case $i in
 		--silent)
-		_SILENT=1
+		_LOGGER_SILENT=true
 		;;
 		--no-stats)
 		_STATS=0
+		;;
+		--remove)
+		ACTION="uninstall"
 		;;
 		--help|-h|-?)
 		Usage
@@ -300,22 +433,35 @@ if [ "$FAKEROOT" != "" ]; then
 	mkdir -p "$SERVICE_DIR_SYSTEMD_SYSTEM" "$SERVICE_DIR_SYSTEMD_USER" "$BIN_DIR"
 fi
 
-SetOSSettings
-CreateConfDir
-CopyExampleFiles
-CopyProgram
+GetLocalOS
+SetLocalOSSettings
 GetInit
-CopyServiceFiles
 
-STATS_LINK="http://instcount.netpower.fr?program=$PROGRAM&version=$PROGRAM_VERSION&os=$OS"
+STATS_LINK="http://instcount.netpower.fr?program=$PROGRAM&version=$PROGRAM_VERSION&os=$OS&action=$ACTION"
 
-QuickLogger "$PROGRAM installed. Use with $BIN_DIR/$PROGRAM"
+if [ "$ACTION" == "uninstall" ]; then
+	RemoveAll
+	QuickLogger "$PROGRAM uninstalled."
+else
+	CreateDir "$CONF_DIR"
+	CreateDir "$BIN_DIR"
+	CopyExampleFiles
+	CopyProgram
+	CopyServiceFiles
+	QuickLogger "$PROGRAM installed. Use with $BIN_DIR/$PROGRAM"
+	if [ "$PROGRAM" == "osync" ] || [ "$PROGRAM" == "obackup" ]; then
+		QuickLogger ""
+		QuickLogger "If connecting remotely, consider setup ssh filter to enhance security."
+		QuickLogger ""
+	fi
+fi
+
 if [ $_STATS -eq 1 ]; then
-	if [ $_SILENT -eq 1 ]; then
+	if [ $_LOGGER_SILENT == true ]; then
 		Statistics
 	else
-		QuickLogger "In order to make install statistics, the script would like to connect to $STATS_LINK"
-		read -r -p "No data except those in the url will be send. Allow [Y/n]" response
+		QuickLogger "In order to make usage statistics, the script would like to connect to $STATS_LINK"
+		read -r -p "No data except those in the url will be send. Allow [Y/n] " response
 		case $response in
 			[nN])
 			exit
