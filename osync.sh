@@ -4235,7 +4235,7 @@ opts=""
 ERROR_ALERT=false
 WARN_ALERT=false
 # Number of CTRL+C needed to stop script
-SOFT_STOP=2
+SOFT_STOP=0
 # Number of given replicas in command line
 _QUICK_SYNC=0
 sync_on_changes=false
